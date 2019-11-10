@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<head>
+<title>RAGE (glsl version)</title>
+<style>
+#play {
+    border-bottom: 0;
+    position: fixed;
+    text-decoration: none;
+    z-index: 1;
+    top: 50%;
+    left: 50%;
+    margin-left: -50px;
+    margin-top: -50px;
+}
+#play svg{
+    color: #000;
+    fill: #fff;
+    height: 100px;
+    width: 100px
+}
+</style>
+
+<script id="2d-vertex-shader" type="x-shader/x-vertex">
+in vec2 a_position;
+void main() {
+    gl_Position = vec4(a_position, 0, 1);
+}
+</script>
+
+<script id="2d-fragment-shader" type="x-shader/x-fragment">
+precision mediump float;
+uniform vec2 iResolution;
+uniform float iTime;
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+    vec2 q = fragCoord.xy - iResolution.xy * .5;
+    fragColor = vec4(int(iTime - atan(q.y, q.x) * 8. / 6.28 + iTime + 8.) / ivec4(2, 4, 1, 1) % 2);
+}
+
+out vec4 fragColor;
+void main() {
+    mainImage(fragColor, gl_FragCoord.xy);
+}
+</script>
+
+<script type="text/javascript" src="https://rawgit.com/alexanderk23/ayumi-js/master/ayumi.js"></script>
+<script type="text/javascript" src="https://rawgit.com/alexanderk23/ayumi-js/master/pako_inflate.min.js"></script>
+<script defer type="text/javascript">
+var psgdump;
+var frameCount;
+var frameRate;
+var ptr = 0;
+var offset;
+var frame = 0;
+var loopFrame = 0;
+var sampleRate = 44100;
+
+var ayumi = new Ayumi;
+
+updateState = function(renderer, r) {
+        renderer.setTone(0, (r[1] << 8) | r[0]);
+        renderer.setTone(1, (r[3] << 8) | r[2]);
+        renderer.setTone(2, (r[5] << 8) | r[4]);
+        renderer.setNoise(r[6]);
+        renderer.setMixer(0, r[7] & 1, (r[7] >> 3) & 1, r[8] >> 4);
+        renderer.setMixer(1, (r[7] >> 1) & 1, (r[7] >> 4) & 1, r[9] >> 4);
+        renderer.setMixer(2, (r[7] >> 2) & 1, (r[7] >> 5) & 1, r[10] >> 4);
+        renderer.setVolume(0, r[8] & 0xf);
+        renderer.setVolume(1, r[9] & 0xf);
+        renderer.setVolume(2, r[10] & 0xf);
+        renderer.setEnvelope((r[12] << 8) | r[11]);
+        if (r[13] != 255) {
+                renderer.setEnvelopeShape(r[13]);
+        }
+}
+
+getint = function() {
+        var r = 0;
+        for(var i=0; i<4; i++) r += psgdump[ptr++] << (8*i);
+        return r;
+}
+
+getstr = function() {
+        var r = '';
+        while(c = psgdump[ptr++]) r+=String.fromCharCode(c);
+        return r;
+}
+
+var isrCounter = 0;
+fillBuffer = function(e) {
+        var isrStep = frameRate / sampleRate;
+        var left = e.outputBuffer.getChannelData(0);
+        var right = e.outputBuffer.getChannelData(1);
+        for(var i = 0; i < left.length; i++) {
+                isrCounter += isrStep;
+                if(isrCounter >= 1) {
+                        isrCounter--;
+                        var regs = [];
+                        for(var r = 0; r < 14; r++) {
+                                regs[r] = psgdump[r*frameCount + frame + offset] || 0;
+                        }
+                        updateState(ayumi, regs);
+                        if(++frame >= frameCount) frame = loopFrame;
+                }
+                ayumi.process();
+                ayumi.removeDC();
+                left[i] = ayumi.left;
+                right[i] = ayumi.right;
+        }
+        return true;
+}
+
+start = function() {
+        offset = getint();
+        frameCount = getint();
+        loopFrame = getint();
+        var clockRate = getint();
+        frameRate = getint();
+        var trackName = getstr();
+        var authorName = getstr();
+
+        ayumi.configure(true, clockRate, sampleRate);
+        ayumi.setPan(0, 0.1, 0);
+        ayumi.setPan(1, 0.5, 0);
+        ayumi.setPan(2, 0.9, 0);
+
+        var AudioContext = window.AudioContext || window.webkitAudioContext;
+        var audioContext = new AudioContext();
+
+        var audioNode = audioContext.createScriptProcessor(4096, 0, 2);
+        audioNode.onaudioprocess = fillBuffer;
+        audioNode.connect(audioContext.destination);
+
+        console.log(offset, frameCount, loopFrame, clockRate, frameRate, trackName, authorName);
+
+        document.getElementById('play').style.display = 'none';
+}
+
+// psg_to_text.py: https://github.com/true-grue/ayumi
+// text_to_fym.py: https://pastebin.com/gDWSCU4n
+var fym = atob('eNrtm79rI0cUx1e7sn7auiKQwpi4OJsEx8EhnImLIJcuAk6OuJZIGzXuUgQEgYRAIEsgf4Ag1RbXpb4mf4MxgRSKueYgBNwEUhxO9s3OdzP7NLOrPdmWZL2PZ/Tmzeyb2e+8lXZl4ze9mFpcfc+7/mXT+8BTjL4cZEraGo4yhfuXo6Eq4aCnCre981AVblHQiobZkra+jTLF6Q97qkzagSrcoqC16vpfdneUIigb3CSW98Mfb/f/2O6Prj7rB0p/+90XWf1/Jvb3999Q+mChF/Ho3+3+rfRCd3ST2L9O3zsPo/NQvRgW8Rjf7b7I6r5J7G73WunD8dCb+jeLof/l6c4gHMXh9EK2k9jd0+soHESheokLfMTDL4pP9ep5uC/5t+uHPrzP4d96/h3rb314nfkc4vsPn18nUcd+vTjy7wmrjR9UM36l4lv74Vd83w8UiR83cuMn5tfx/pTxnGnj0Y/jebxrnfvWbxm3zsv1wC+Kd+mX/OfnP2D9wX3lv2LPP99/p/6S+RceBriv2yyqbbzfH40/H/f1z3j89uhwROxFRxG1qVIb/sHz4+dkj1+dvTI5vDy5NKHjTIrGAa1D0DjWpfbj8CAkYHk84gBfjyDNRSDu6OrjK2pTpTatB5/a1GfC9+Nkq7dl8kl30DU5e3r+NA/b+ROufnBxcfFbzIXNmvpde7Es+d8e7g1N0E/HUxvxtC7mQJvsxDxff/Pd9z/8+BN0UX6p7Tpv3l90PfDxojzycZuPOu31YMm/fHA+ENLnGotFtY1XY9bWarV6vdFoNluVh75HRdzeYvGjnEGRz7lr/ZW71i8s9PWv294zDe4XZf2vNLh/l/V/1eC+WNb/WYPnprK+6Bf989R/pMH3hPv2Jf/z1V80P9f7jyb9XjFb/j3+vLFsfno/05T1Rb/oX+bzl/yL/hn0538JFZaGakA59QObRbWNB2v1uBWoSyMIalWwqcH88BG3yUjPg8VPjJeMd+mcNh7HIzbV71hnUfW/7vpO/UHyObAs+m8j/5n3ieRf/f5nZz/LDrP7BX5Zuz9jv6x/N+vDPon5KEa92CzIGV+oeE2q02CV9JOf0b9i+Z/wXeusVv69DU1Ts8Hg/dMeJ/HLEf+os7FOoD922+Tzfvhk261mw/Tz4lvNZoMw1ysTbzvfMvE4nsc714lH2zGLpv9113fpl/zb11lU/XeUf/mj+APBvC64RbWNU63X1qpxCfxKPM+jTkddb7FttfJtp0P3E3V512f1Qd76dDy1MV5mfuxR4T7OWb+5DzS+kbyN28DVn6UFmiamftdeLHP+pz1vWHV89rmoYZvH3G/4Lj38OKd+ti6Hz/d/O0kw+aquZ2jnYcv/9lsJYsWKFSt2paz3qeYdTVn/RPNYU9Y/0+xpyvr4/49jTVlf9Iv+eer/QnOouW9f8j9f/UXzc709zYFmxvzLL04EQRBWlPV/E8SKFStW7ErZ/wDT1d1C');
+psgdump = pako.inflate(fym);
+
+var gl;
+var canvas;
+var buffer;
+var shaderScript;
+var shaderSource;
+var vertexShader;
+var fragmentShader;
+var program;
+var time = 0;
+
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    gl.viewport( 0, 0, canvas.width, canvas.height );
+    update();
+}
+
+
+window.onload = init;
+window.onresize = resize;
+
+function init() {
+
+    canvas = document.getElementById('glscreen');
+    gl = canvas.getContext('webgl2', { alpha: false });
+
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+
+    buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData( gl.ARRAY_BUFFER, new Float32Array (
+        [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0]), gl.STATIC_DRAW);
+
+    vertexShader = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vertexShader, '#version 300 es\n' + document.getElementById("2d-vertex-shader").text);
+    gl.compileShader(vertexShader);
+
+    fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fragmentShader, '#version 300 es\n' + document.getElementById("2d-fragment-shader").text);
+    gl.compileShader(fragmentShader);
+
+    console.log(gl.getShaderInfoLog(fragmentShader));
+
+    program = gl.createProgram();
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    gl.useProgram(program);
+
+    console.log(gl.getProgramInfoLog(program));
+
+    resize();
+    render();
+}
+
+function update() {
+    positionLocation = gl.getAttribLocation(program, "a_position");
+    gl.enableVertexAttribArray(positionLocation);
+    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+    timeLocation = gl.getUniformLocation(program, "iTime");
+    gl.uniform1f(timeLocation, time / 1000.0);
+
+    uniformLocation = gl.getUniformLocation( program, "iResolution" );
+    gl.uniform2f( uniformLocation, window.innerWidth, window.innerHeight );
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+
+function render(ts) {
+    time = ts;
+    window.requestAnimationFrame(render, canvas);
+    update();
+}
+
+
+</script>
+
+<style>
+
+html, body{
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: #aaa;
+    width: 100%;
+    height: 100%;
+}
+
+.textbox {
+    margin: auto;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+
+    width: 10em;
+    height: 7.5em;
+
+    color: white;
+    background-color: black;
+}
+
+.marquee {
+    font-size: 5em;
+    font-family: serif;
+    text-align: center;
+    color: white;
+    margin-top: 0.25em;
+    animation: bounce .32s ease infinite alternate;
+}
+
+.marquee span {
+    display: inline-block;
+    padding-left: 100%;
+    user-select: none;
+    animation: marquee 40s linear infinite;
+}
+
+canvas {
+    width: 100%;
+    height: 100%;
+}
+
+@keyframes bounce { 100% { margin-top: -0.1em; } }
+@keyframes marquee { 0% { transform: translate(0, 0); } 100% { transform: translate(-100%, 0); }}
+
+</style>
+</head>
+
+<body>
+
+<a href="javascript:start()" id="play"><svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+     viewBox="0 0 60 60" style="enable-background:new 0 0 60 60;" xml:space="preserve"><g>
+    <path d="M45.563,29.174l-22-15c-0.307-0.208-0.703-0.231-1.031-0.058C22.205,14.289,22,14.629,22,15v30
+        c0,0.371,0.205,0.711,0.533,0.884C22.679,45.962,22.84,46,23,46c0.197,0,0.394-0.059,0.563-0.174l22-15
+        C45.836,30.64,46,30.331,46,30S45.836,29.36,45.563,29.174z M24,43.107V16.893L43.225,30L24,43.107z"/>
+    <path d="M30,0C13.458,0,0,13.458,0,30s13.458,30,30,30s30-13.458,30-30S46.542,0,30,0z M30,58C14.561,58,2,45.439,2,30
+        S14.561,2,30,2s28,12.561,28,28S45.439,58,30,58z"/>
+</g></svg></a>
+
+<canvas id="glscreen"></canvas>
+<div class="textbox">
+<p class="marquee" id="marquee">
+<span>Music from RAGE Megademo by X-Trade, played in realtime with ayumi-js by alexanderk23. ProTracker 2 module (RAGE_2.pt2) by LAV converted to .psg with AyEmul, then to text dump with psg_to_text.py, then to compressed .fym with text_to_fym.py. HTML5 version and text to .fym converter by Joric.</span>
+</p>
+</div>
+
+</body>
+</html>

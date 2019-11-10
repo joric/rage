@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<head>
+<title>RAGE (glsl sound)</title>
+
+<script id="2d-vertex-shader" type="x-shader/x-vertex">#version 300 es
+in vec2 a_position;
+void main()
+{
+    gl_Position = vec4(a_position, 0, 1);
+}
+</script>
+
+<script id="2d-fragment-shader" type="x-shader/x-fragment">#version 300 es
+#ifdef GL_ES
+precision mediump float;
+#endif
+uniform vec2 iResolution;
+uniform float iTime;
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+    float vmax = max(iResolution.x, iResolution.y);
+    vec2 q = (gl_FragCoord.xy - (iResolution.xy - vmax) * 0.5) / vec2(vmax, vmax) - 0.5;
+    int i = int(mod(atan(q.y, q.x) * 8.0 / 6.28 - iTime, 8.0));
+    fragColor = vec4(mod(float(i/2), 2.0), mod(float(i/4), 2.0), mod(float(i), 2.0), 1.0);
+}
+
+out vec4 fragColor;
+void main() {
+    mainImage(fragColor, gl_FragCoord.xy);
+}
+</script>
+
+<script id="2d-sound-shader" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+uniform float     iChannelTime[4];
+uniform float     iBlockOffset; 
+uniform vec4      iDate;
+uniform float     iSampleRate;
+uniform vec3      iChannelResolution[4];
+uniform sampler2D iChannel0;
+uniform sampler2D iChannel1;
+uniform sampler2D iChannel2;
+uniform sampler2D iChannel3;
+
+
+// PSG player for shadertoy (c) joric 2018, public domain
+// AY register data from From the ZX Spectrum Demo RAGE by X-Trade (RAGE_2.pt2 by LAV)
+// all the scripts, data and testing framework: http://bmxplay.sourceforge.net/rage
+// still unfinished, needs data compression and proper envelopes for the bass line
+
+#define REGS(x) frame_reg(frame, x)
+#define PLAYERFREQ 50.0
+#define NOT(x) ((x)!=0 ? 0 : 1)
+#define AYEMU_MAX_AMP 24575
+#define AYEMU_DEFAULT_CHIP_FREQ 1773400
+
+#define FRAMES 1536
+#define LOOP_FRAME 512
+#define CHUNKS 193
+#define CHUNK_SIZE 16
+
+ivec4 get_reg(int r, int i) {
+    if ((r==0 && (i==0 || i==16))) return ivec4(0x9f776b9f,0x776b9f77,0x6b9f776b,0x9f776b9f);
+    if ((r==0 && (i==1 || i==17))) return ivec4(0x9f776b9f,0x776b9f77,0x6b7e9f6b,0x7e9f6b7e);
+    if ((r==0 && (i==2 || i==18))) return ivec4(0x9f6b7e9f,0x6b7e9f6b,0x6b7e9f6b,0x7e9f6b7e);
+    if ((r==0 && (i==3 || i==19))) return ivec4(0x9f6b7e9f,0x6b7e9f6b,0xd69f7ed6,0x9f7ed69f);
+    if ((r==0 && (i==4 || i==20))) return ivec4(0x8e6b5e8e,0x6b5e8e6b,0x8e6b5e8e,0x6b5e8e6b);
+    if ((r==0 && (i==5 || i==21))) return ivec4(0x8e6b5e8e,0x6b5e8e6b,0x5e708e5e,0x708e5e70);
+    if ((r==0 && (i==6 || i==22))) return ivec4(0x5e708e5e,0x708e5e70,0x5e708e5e,0x708e5e70);
+    if ((r==0 && (i==7 || i==23))) return ivec4(0x8e5e708e,0x5e708e5e,0x5e708e5e,0x708e5e70);
+    if ((r==0 && (i==8 || i==24))) return ivec4(0xa87e70a8,0x7e70a87e,0x70a87e70,0xa87e70a8);
+    if ((r==0 && (i==9 || i==25))) return ivec4(0xa87e70a8,0x7e70a87e,0x7085a870,0x85a87085);
+    if ((r==0 && ((i>=10 && i<=11) || (i>=26 && i<=27)))) return ivec4(0xa87085a8,0x7085a870,0x7085a870,0x85a87085);
+    if ((r==0 && (i==12 || i==28))) return ivec4(0xa87e5ea8,0x7e5ea87e,0xa87e5ea8,0x7e5ea87e);
+    if ((r==0 && (i==13 || i==29))) return ivec4(0xa87e5ea8,0x7e5ea87e,0xa87e6ba8,0x7e6ba87e);
+    if ((r==0 && (i==14 || i==30))) return ivec4(0xa87e6ba8,0x7e6ba87e,0xa87e6ba8,0x7e6ba87e);
+    if ((r==0 && (i==15 || i==31))) return ivec4(0x6ba87e6b,0xa87e6ba8,0xa87e6ba8,0x7e6ba87e);
+    if ((r==0 && (i==32 || i==48 || i==64 || i==80 || i==88))) return ivec4(0xe83e246b,0x7e9f6b7e,0x6b7e9f6b,0x7e9f6b7e);
+    if ((r==0 && (i==33 || i==49 || i==65))) return ivec4(0x6bfe9f6b,0x7e9f6b7e,0xe83e246b,0x7e9f6b7e);
+    if ((r==0 && (i==34 || i==50 || i==66 || i==90))) return ivec4(0x6b7e9f6b,0x7e9f6b7e,0xe83e246b,0x7e9f6b7e);
+    if ((r==0 && (i==35 || i==51 || i==67 || i==83))) return ivec4(0xdf1f5fe0,0x1f5f9fe1,0x535f03d6,0x9f7ed69f);
+    if ((r==0 && (i==36 || i==52 || i==68 || i==84))) return ivec4(0x0b2be38e,0x6b5e8e6b,0x8e6b5e8e,0x6b5e8e6b);
+    if ((r==0 && (i==37 || i==53 || i==69 || i==85))) return ivec4(0x8eeb5e8e,0x6b5e8e6b,0xdb30135e,0x708e5e70);
+    if ((r==0 && (i==38 || i==54 || i==70 || i==86))) return ivec4(0xdb30135e,0x708e5e70,0x5e708e5e,0x708e5e70);
+    if ((r==0 && (i==39 || i==55 || i==71 || i==87))) return ivec4(0xdf1f5fe0,0x1f5f9fe1,0xdb30135e,0x708e5e70);
+    if ((r==0 && (i==40 || i==72))) return ivec4(0x253ef5a8,0x7e70a87e,0xa87e70a8,0x7e70a87e);
+    if ((r==0 && (i==41 || i==73))) return ivec4(0xa8fe70a8,0x7e70a87e,0xed4e2d70,0x8ea8708e);
+    if ((r==0 && (i==42 || i==74))) return ivec4(0x708ea870,0x8ea8708e,0x708ea870,0x8ea8708e);
+    if ((r==0 && (i==43 || i==75))) return ivec4(0xdf1f5fe0,0x1f5f9fe1,0xed4e2d70,0x8ea8708e);
+    if ((r==0 && (i==44 || i==76))) return ivec4(0x253ee3a8,0x7e5ea87e,0xa87e5ea8,0x7e5ea87e);
+    if ((r==0 && (i==45 || i==77))) return ivec4(0xa8fe5ea8,0x7e5ea87e,0x253ef0a8,0x7e6ba87e);
+    if ((r==0 && (i==46 || i==78))) return ivec4(0xdf1f5fe0,0x1f5f9fe1,0xa87e6ba8,0x7e6ba87e);
+    if ((r==0 && (i==47 || i==79))) return ivec4(0xdf1f5fe0,0x1f5f9fe1,0xa8fe6ba8,0x7e6ba87e);
+    if ((r==0 && (i==56 || i==60))) return ivec4(0xe84e246b,0x8e9f6b8e,0x6b8e9f6b,0x8e9f6b8e);
+    if ((r==0 && (i==57 || i==61))) return ivec4(0x6b0e9f6b,0x8e9f6b8e,0x254ef0a8,0x8e6ba88e);
+    if ((r==0 && (i==58))) return ivec4(0xa88e6ba8,0x8e6ba88e,0x254ef0a8,0x8e6ba88e);
+    if ((r==0 && (i==59))) return ivec4(0xdf1f5fe0,0x1f5f9fe1,0x254ef0a8,0x8e6ba88e);
+    if ((r==0 && ((i>=62 && i<=63) || i==94))) return ivec4(0xdf1f5fe0,0x1f5f9fe1,0xa88e6ba8,0x8e6ba88e);
+    if ((r==0 && (i==81))) return ivec4(0x6bfe9f6b,0x7e9f6b7e,0x535f03d6,0x9f7ed69f);
+    if ((r==0 && (i==82))) return ivec4(0xd69f7ed6,0x9f7ed69f,0x535f03d6,0x9f7ed69f);
+    if ((r==0 && (i==89))) return ivec4(0x6bfe9f6b,0x7e9f6b7e,0x1c37f09f,0x776b9f77);
+    if ((r==0 && (i==91))) return ivec4(0xdf1f5fe0,0x1f5f9fe1,0xe83e246b,0x7e9f6b7e);
+    if ((r==0 && (i==92))) return ivec4(0x254ef0a8,0x8e6ba88e,0xa88e6ba8,0x8e6ba88e);
+    if ((r==0 && (i==93))) return ivec4(0xa80e6ba8,0x8e6ba88e,0x254ef0a8,0x8e6ba88e);
+    if ((r==0 && (i==95))) return ivec4(0xdf1f5fe0,0x1f5f9fe1,0xa88e6ba8,0x8e6ba8a8);
+    if ((r==1 && (i==32 || i==38 || i==48 || i==54 || i==56 || i==60 || i==64 || i==70 || i==80 || i==86 || i==88))) return ivec4(0x02030400,0x00000000,0x00000000,0x00000000);
+    if ((r==1 && (i==33 || i==37 || i==41 || i==49 || i==53 || i==65 || i==69 || i==73 || i==85))) return ivec4(0x01010200,0x00000000,0x02030400,0x00000000);
+    if ((r==1 && (i==34 || i==50 || i==66 || i==90))) return ivec4(0x00000000,0x00000000,0x02030400,0x00000000);
+    if ((r==1 && (i==35 || i==51 || i==67 || i==83))) return ivec4(0x01020202,0x03030303,0x03030400,0x00000000);
+    if ((r==1 && (i==36 || i==40 || i==44 || i==52 || i==68 || i==72 || i==76 || i==84 || i==92))) return ivec4(0x03030300,0x00000000,0x00000000,0x00000000);
+    if ((r==1 && (i==39 || i==43 || i==55 || i==71 || i==75 || i==87 || i==91))) return ivec4(0x01020202,0x03030303,0x02030400,0x00000000);
+    if ((r==1 && (i==45 || i==77 || i==89))) return ivec4(0x01010200,0x00000000,0x03030300,0x00000000);
+    if ((r==1 && (i==46 || (i>=62 && i<=63) || i==78 || (i>=94 && i<=95)))) return ivec4(0x01020202,0x03030303,0x00000000,0x00000000);
+    if ((r==1 && (i==47 || i==79))) return ivec4(0x01020202,0x03030303,0x01010200,0x00000000);
+    if ((r==1 && (i==57 || i==61 || i==93))) return ivec4(0x01020200,0x00000000,0x03030300,0x00000000);
+    if ((r==1 && (i==58))) return ivec4(0x00000000,0x00000000,0x03030300,0x00000000);
+    if ((r==1 && (i==59))) return ivec4(0x01020202,0x03030303,0x03030300,0x00000000);
+    if ((r==1 && (i==81))) return ivec4(0x01010200,0x00000000,0x03030400,0x00000000);
+    if ((r==1 && (i==82))) return ivec4(0x00000000,0x00000000,0x03030400,0x00000000);
+    if ((r==2 && (i==28))) return ivec4(0x00000000,0x00000000,0xdf1f5fe0,0x1f5f9fe1);
+    if ((r==2 && (i==29 || i==31))) return ivec4(0xdf1f5fe0,0x1f5f9fe1,0xdf1f5fe0,0x1f5f9fe1);
+    if ((r==2 && (i==30))) return ivec4(0xdf1f5fe0,0xdf1f5fe0,0xdf1f5fe0,0x1f5f9fe1);
+    if ((r==2 && (i==32))) return ivec4(0x5f5f9fdf,0x61df5fdf,0x5fdf5fdf,0x5fdfdfdf);
+    if ((r==2 && (i==33 || i==65))) return ivec4(0x279f359f,0x9f9f9f9f,0x2aa838a8,0x279f359f);
+    if ((r==2 && (i==34 || i==66))) return ivec4(0x279f359f,0x2aa838a8,0x2aa838a8,0x279f359f);
+    if ((r==2 && (i==35 || i==67))) return ivec4(0x2fbd3fbd,0x279f359f,0x3ffc54fc,0xfcfcfcfc);
+    if ((r==2 && (i==36 || i==68))) return ivec4(0xfcfcfcfc,0xfcfcfcfc,0x35d647d6,0xd6d6d6d6);
+    if ((r==2 && (i==37 || i==39 || i==69 || i==71))) return ivec4(0xd6d6d6d6,0xd6d6d6d6,0x2fbd3fbd,0xbdbdbdbd);
+    if ((r==2 && (i==38 || i==70))) return ivec4(0xbdbdbdbd,0xbdbdbdbd,0x35d647d6,0xd6d6d6d6);
+    if ((r==2 && (i==40 || i==72))) return ivec4(0xbdbdbdbd,0xbdbdbdbd,0xbdbdbdbd,0xbdbdbdbd);
+    if ((r==2 && (i==41 || i==73))) return ivec4(0x2aa838a8,0xa8a8a8a8,0x2fbd3fbd,0x2aa838a8);
+    if ((r==2 && (i==42 || i==74))) return ivec4(0x2aa838a8,0x2fbd3fbd,0x238e2f8e,0x8e8e8e8e);
+    if ((r==2 && (i==43))) return ivec4(0x238e2f8e,0x8e8e8e8e,0x2fbd3fbd,0xbdbdbdbd);
+    if ((r==2 && (i==44))) return ivec4(0xbdbdbdbd,0xbdbdbdbd,0x2aa838a8,0xa8a8a8a8);
+    if ((r==2 && (i==45))) return ivec4(0xa8a8a8a8,0xa8a8a8a8,0x35d647d6,0xd6d6d6d6);
+    if ((r==2 && (i==46))) return ivec4(0xd6d6d6d6,0xd6d6d6d6,0xd6d6d6d6,0xdf1f5fe0);
+    if ((r==2 && ((i>=47 && i<=48) || i==64))) return ivec4(0xe0e0e0e0,0xe0e0e0e0,0xe0e0e0e0,0xe0e0e0e0);
+    if ((r==2 && (i==49))) return ivec4(0x35d647d6,0xd6d6d6d6,0x38e14be1,0x35d647d6);
+    if ((r==2 && (i==50))) return ivec4(0x35d647d6,0x38e14be1,0x2fbd3fbd,0x35d647d6);
+    if ((r==2 && (i==51))) return ivec4(0x35d647d6,0x2fbd3fbd,0x38e14be1,0xe1e1e1e1);
+    if ((r==2 && (i==52 || i==85))) return ivec4(0xe1e1e1e1,0xe1e1e1e1,0x3ffc54fc,0xfcfcfcfc);
+    if ((r==2 && (i==53))) return ivec4(0xfcfcfcfc,0xfcfcfcfc,0x471c5e1c,0x1c1c1c1c);
+    if ((r==2 && (i==54))) return ivec4(0x1c1c1c1c,0x1c1c1c1c,0x4f3e6b3e,0x3e3e3e3e);
+    if ((r==2 && (i==55))) return ivec4(0x3e3e3e3e,0x3e3e3e3e,0x54517051,0x51515151);
+    if ((r==2 && (i==56))) return ivec4(0x51515151,0x51515151,0x51515151,0x51515151);
+    if ((r==2 && (i==57))) return ivec4(0x51515151,0x51515151,0x35d647d6,0xd6d6d6d6);
+    if ((r==2 && (i==58 || i==60 || i==88 || i==93))) return ivec4(0xd6d6d6d6,0xd6d6d6d6,0xd6d6d6d6,0xd6d6d6d6);
+    if ((r==2 && (i==59 || i==82 || i==92))) return ivec4(0x35d647d6,0xd6d6d6d6,0xd6d6d6d6,0xd6d6d6d6);
+    if ((r==2 && (i==61))) return ivec4(0xd4d4d4d8,0xd8d8d8d4,0xd4d4d4d8,0xd8d8d8d4);
+    if ((r==2 && (i==62 || i==94))) return ivec4(0xd4d4d4d8,0xd8d8d8d4,0xd4d4d4d8,0xdf1f5fe0);
+    if ((r==2 && (i==63 || i==95))) return ivec4(0xe0e0e0e0,0xe0e0e0e0,0xdf1f5fe0,0xe0e0e0e0);
+    if ((r==2 && (i==75))) return ivec4(0x238e2f8e,0x8e8e8e8e,0x1f7e2a7e,0x7e7e7e7e);
+    if ((r==2 && (i==76))) return ivec4(0x7e7e7e7e,0x7e7e7e7e,0x238e2f8e,0x8e8e8e8e);
+    if ((r==2 && (i==77))) return ivec4(0x2aa838a8,0x238e2f8e,0x2fbd3fbd,0x2aa838a8);
+    if ((r==2 && (i==78))) return ivec4(0x35d647d6,0x2aa838a8,0x2fbd3fbd,0x35d647d6);
+    if ((r==2 && (i==79))) return ivec4(0x2aa838a8,0x35d647d6,0x238e2f8e,0x8e8e8e8e);
+    if ((r==2 && (i==80))) return ivec4(0x1f7e2a7e,0x7e7e7e7e,0x7e818487,0x8a8d9093);
+    if ((r==2 && (i==81))) return ivec4(0x3ffc54fc,0xfcfcfcfc,0x38e14be1,0x3ffc54fc);
+    if ((r==2 && (i==83))) return ivec4(0x2fbd3fbd,0xbdbdbdbd,0x35d647d6,0xd6d6d6d6);
+    if ((r==2 && (i==84))) return ivec4(0xd6d6d6d6,0xd6d6d6d6,0x38e14be1,0xe1e1e1e1);
+    if ((r==2 && (i==86))) return ivec4(0xfcfcfcfc,0xfcfcfcfc,0x38e14be1,0xe1e1e1e1);
+    if ((r==2 && (i==87))) return ivec4(0xe1e1e1e1,0xe1e1e1e1,0x35d647d6,0xd6d6d6d6);
+    if ((r==2 && ((i>=89 && i<=90)))) return ivec4(0xd6d6d6d6,0xd6d6d6d6,0x35d647d6,0xd6d6d6d6);
+    if ((r==2 && (i==91))) return ivec4(0xd6d6d6d6,0xd6d6d6d6,0x35d647d6,0x35d647d6);
+    if ((r==3 && (i==28))) return ivec4(0x00000000,0x00000000,0x01020202,0x03030303);
+    if ((r==3 && (i==29 || i==31))) return ivec4(0x01020202,0x03030303,0x01020202,0x03030303);
+    if ((r==3 && (i==30))) return ivec4(0x01020202,0x01020202,0x01020202,0x03030303);
+    if ((r==3 && (i==32))) return ivec4(0x04040404,0x05050606,0x07070808,0x09090a01);
+    if ((r==3 && (i==46 || i==62 || i==94))) return ivec4(0x00000000,0x00000000,0x00000000,0x01020202);
+    if ((r==3 && ((i>=47 && i<=48) || i==64))) return ivec4(0x02020202,0x02020202,0x02020202,0x02020202);
+    if ((r==3 && (i==53))) return ivec4(0x00000000,0x00000000,0x00010001,0x01010101);
+    if ((r==3 && ((i>=54 && i<=55)))) return ivec4(0x01010101,0x01010101,0x00010001,0x01010101);
+    if ((r==3 && (i==56)) || (r==6 && ((i>=0 && i<=27) || i==42 || i==74))) return ivec4(0x01010101,0x01010101,0x01010101,0x01010101);
+    if ((r==3 && (i==57)) || (r==5 && ((i>=0 && i<=11) || (i>=16 && i<=27) || (i>=32 && i<=43) || (i>=48 && i<=55) || (i>=64 && i<=75) || (i>=80 && i<=91)))) return ivec4(0x01010101,0x01010101,0x00000000,0x00000000);
+    if ((r==3 && (i==63 || i==95))) return ivec4(0x02020202,0x02020202,0x01020202,0x02020202);
+    if ((r==4 && ((i>=0 && i<=3) || (i>=16 && i<=19) || (i>=32 && i<=35) || (i>=48 && i<=51) || (i>=64 && i<=67) || (i>=80 && i<=83) || (i>=88 && i<=89)))) return ivec4(0xacacacac,0xacacacac,0xd6d6d6d6,0xd6d6d6d6);
+    if ((r==4 && ((i>=4 && i<=7) || (i>=20 && i<=23) || (i>=36 && i<=39) || (i>=52 && i<=55) || (i>=68 && i<=71) || (i>=84 && i<=87)))) return ivec4(0x7b7b7b7b,0x7b7b7b7b,0xbdbdbdbd,0xbdbdbdbd);
+    if ((r==4 && ((i>=8 && i<=11) || (i>=24 && i<=27) || (i>=40 && i<=43) || (i>=72 && i<=75) || i==90))) return ivec4(0xc2c2c2c2,0xc2c2c2c2,0xe1e1e1e1,0xe1e1e1e1);
+    if ((r==4 && ((i>=12 && i<=15) || (i>=28 && i<=31) || (i>=44 && i<=47) || (i>=76 && i<=79)))) return ivec4(0xa2a2a2a2,0xa2a2a2a2,0x51515151,0x51515151);
+    if ((r==4 && ((i>=56 && i<=63) || (i>=92 && i<=95)))) return ivec4(0x38383838,0x38383838,0x1c1c1c1c,0x1c1c1c1c);
+    if ((r==4 && (i==91))) return ivec4(0xf8f8f8f8,0xf8f8f8f8,0xfcfcfcfc,0xfcfcfcfc);
+    if ((r==5 && ((i>=12 && i<=15) || (i>=28 && i<=31) || (i>=44 && i<=47) || (i>=56 && i<=63) || (i>=76 && i<=79) || (i>=92 && i<=95)))) return ivec4(0x02020202,0x02020202,0x01010101,0x01010101);
+    if ((r==6 && (i==28))) return ivec4(0x01010101,0x01010101,0x04030202,0x01010203);
+    if ((r==6 && (i==29 || i==31))) return ivec4(0x04030202,0x01010203,0x04030202,0x01010203);
+    if ((r==6 && (i==30))) return ivec4(0x04030202,0x04030202,0x04030202,0x01010203);
+    if ((r==6 && (i==32))) return ivec4(0x03050703,0x02020301,0x01010102,0x03030604);
+    if ((r==6 && (i==33 || i==37 || i==41 || i==45 || i==49 || i==53 || i==57 || i==61 || i==65 || i==69 || i==73 || i==77 || i==81 || i==85 || i==89 || i==93))) return ivec4(0x04040404,0x04040404,0x1a1a1a1a,0x1a1a1a1a);
+    if ((r==6 && (i==34 || i==50 || i==58 || i==66 || i==82 || i==90))) return ivec4(0x01010101,0x01010101,0x1a1a1a1a,0x1a1a1a1a);
+    if ((r==6 && (i==35 || i==39 || i==43 || i==51 || i==55 || i==59 || i==67 || i==71 || i==75 || i==83 || i==87 || i==91))) return ivec4(0x04030202,0x01010203,0x1a1a1a1a,0x1a1a1a1a);
+    if ((r==6 && (i==36 || i==38 || i==40 || i==44 || i==48 || i==52 || i==54 || i==56 || i==60 || i==64 || i==68 || i==70 || i==72 || i==76 || i==80 || i==84 || i==86 || i==88 || i==92))) return ivec4(0x1a1a1a1a,0x1a1a1a1a,0x01010101,0x01010101);
+    if ((r==6 && (i==46 || i==62 || i==94))) return ivec4(0x04030202,0x01010203,0x01010101,0x04030202);
+    if ((r==6 && (i==47 || i==79))) return ivec4(0x04030202,0x01010203,0x04040404,0x04040404);
+    if ((r==6 && (i==63 || i==95))) return ivec4(0x04030202,0x01010203,0x04030202,0x02020202);
+    if ((r==6 && (i==78))) return ivec4(0x04030202,0x01010203,0x01010101,0x01010101);
+    if ((r==7 && (i==0 || i==8 || i==16 || i==24))) return ivec4(0x242c2c2c,0x2c2c2c2c,0x2c2c2c2c,0x2c2c2c2c);
+    if ((r==7 && (i==1 || (i>=4 && i<=6) || i==9 || (i>=12 && i<=14) || i==17 || (i>=20 && i<=22) || i==25 || (i>=28 && i<=30) || i==32 || i==48 || i==64))) return ivec4(0x242c2c2c,0x2c2c2c2c,0x242c2c2c,0x2c2c2c2c);
+    if ((r==7 && ((i>=2 && i<=3) || i==7 || (i>=10 && i<=11) || i==15 || (i>=18 && i<=19) || i==23 || (i>=26 && i<=27) || i==31))) return ivec4(0x2c2c2c2c,0x2c2c2c2c,0x242c2c2c,0x2c2c2c2c);
+    if ((r==7 && (i==33 || i==37 || i==41 || i==45 || i==49 || i==53 || i==57 || i==61 || i==65 || i==69 || i==73 || i==77 || i==81 || i==85 || i==89 || i==93))) return ivec4(0x34343434,0x3c3c3c3c,0x343c3c3c,0x3c3c3c3c);
+    if ((r==7 && (i==34 || i==36 || i==38 || i==40 || i==42 || i==44 || i==50 || i==52 || i==54 || i==56 || i==58 || i==60 || i==66 || i==68 || i==70 || i==72 || i==74 || i==76 || i==80 || i==82 || i==84 || i==86 || i==88 || i==90 || i==92))) return ivec4(0x343c3c3c,0x3c3c3c3c,0x343c3c3c,0x3c3c3c3c);
+    if ((r==7 && (i==35 || i==39 || i==43 || i==51 || i==55 || i==59 || i==67 || i==71 || i==75 || i==78 || i==83 || i==87 || i==91))) return ivec4(0x34343434,0x34343434,0x343c3c3c,0x3c3c3c3c);
+    if ((r==7 && (i==46))) return ivec4(0x34343434,0x34343434,0x242c2c2c,0x2c2c2c2c);
+    if ((r==7 && (i==47))) return ivec4(0x24242424,0x24242424,0x24242424,0x2c2c2c2c);
+    if ((r==7 && (i==62 || i==94))) return ivec4(0x34343434,0x34343434,0x343c3c3c,0x2c2c2c2c);
+    if ((r==7 && (i==63 || i==95))) return ivec4(0x24242424,0x24242424,0x242c2c2c,0x2c2c2c2c);
+    if ((r==7 && (i==79))) return ivec4(0x34343434,0x34343434,0x34343434,0x3c3c3c3c);
+    if ((r==8 && (i==0 || i==4 || i==8 || i==12 || i==16 || i==20 || i==24 || i==28))) return ivec4(0x0d0d0d0d,0x0d0d0d0d,0x09090909,0x09090909);
+    if ((r==8 && (i==1 || i==5 || i==9 || i==13 || i==17 || i==21 || i==25 || i==29))) return ivec4(0x0d0d0d0d,0x0d0d0d0d,0x0d0d0d0d,0x0d0d0d0d);
+    if ((r==8 && ((i>=2 && i<=3) || (i>=6 && i<=7) || (i>=10 && i<=11) || (i>=14 && i<=15) || (i>=18 && i<=19) || (i>=22 && i<=23) || (i>=26 && i<=27) || (i>=30 && i<=31) || i==42 || i==74))) return ivec4(0x09090909,0x09090909,0x0d0d0d0d,0x0d0d0d0d);
+    if ((r==8 && (i==32 || i==36 || i==40 || i==44 || i==48 || i==52 || i==56 || i==60 || i==64 || i==68 || i==72 || i==76 || i==80 || i==84 || i==88 || i==92))) return ivec4(0x0f0e0d0c,0x0c0c0c0c,0x09090909,0x09090909);
+    if ((r==8 && (i==33 || i==37 || i==41 || i==45 || i==53 || i==57 || i==61 || i==65 || i==69 || i==73 || i==77 || i==81 || i==85 || i==89 || i==93))) return ivec4(0x0e0d0c0b,0x0c0c0c0c,0x0f0e0d0c,0x0c0c0c0c);
+    if ((r==8 && (i==34 || i==50 || i==58 || i==66 || i==82 || i==90))) return ivec4(0x09090909,0x09090909,0x0f0e0d0c,0x0c0c0c0c);
+    if ((r==8 && (i==35 || i==39 || i==43 || i==51 || i==55 || i==59 || i==67 || i==71 || i==75 || i==83 || i==87 || i==91))) return ivec4(0x0f0e0d0c,0x0b0a0908,0x0f0e0d0c,0x0c0c0c0c);
+    if ((r==8 && (i==38 || i==54 || i==70 || i==86))) return ivec4(0x0a090908,0x08080808,0x0d0d0d0d,0x0d0d0d0d);
+    if ((r==8 && (i==46 || (i>=62 && i<=63) || i==78 || (i>=94 && i<=95)))) return ivec4(0x0f0e0d0c,0x0b0a0908,0x0d0d0d0d,0x0d0d0d0d);
+    if ((r==8 && (i==47 || i==79))) return ivec4(0x0f0e0d0c,0x0b0a0908,0x0e0d0c0b,0x0c0c0c0c);
+    if ((r==8 && (i==49))) return ivec4(0x0d0c0b0a,0x0b0b0b0b,0x0f0e0d0c,0x0c0c0c0c);
+    if ((r==9 && (i==28))) return ivec4(0x00000000,0x00000000,0x0f0e0d0c,0x0b0a0908);
+    if ((r==9 && (i==29 || i==31))) return ivec4(0x0f0e0d0c,0x0b0a0908,0x0f0e0d0c,0x0b0a0908);
+    if ((r==9 && (i==30))) return ivec4(0x0f0e0d0c,0x0f0e0d0c,0x0f0e0d0c,0x0b0a0908);
+    if ((r==9 && (i==32))) return ivec4(0x0b0a0908,0x07060504,0x06050403,0x02010000);
+    if ((r==9 && (i==33 || i==41 || i==49 || i==65 || i==73 || i==81))) return ivec4(0x0f0f0e0e,0x09090909,0x0f0f0e0e,0x0a0a0909);
+    if ((r==9 && (i==34 || i==50 || i==66 || (i>=77 && i<=78)))) return ivec4(0x0f0f0e0e,0x0a0a0909,0x0f0f0e0e,0x0a0a0909);
+    if ((r==9 && (i==35 || i==42 || i==51 || i==67 || i==74))) return ivec4(0x0f0f0e0e,0x0a0a0909,0x0f0f0e0e,0x0e0e0d0d);
+    if ((r==9 && ((i>=36 && i<=39) || (i>=44 && i<=45) || (i>=52 && i<=55) || (i>=68 && i<=71) || i==84 || i==86))) return ivec4(0x09090808,0x08080807,0x0f0f0e0e,0x0e0e0d0d);
+    if ((r==9 && (i==40 || i==56 || i==72))) return ivec4(0x09090808,0x08080807,0x07070707,0x07070707);
+    if ((r==9 && (i==43 || i==75))) return ivec4(0x0a0a0909,0x09090909,0x0f0f0e0e,0x0e0e0d0d);
+    if ((r==9 && (i==46))) return ivec4(0x09090808,0x08080807,0x00000000,0x0f0e0d0c);
+    if ((r==9 && (i==57))) return ivec4(0x07070707,0x07070707,0x0f0f0e0e,0x0e0e0d0d);
+    if ((r==9 && (i==58))) return ivec4(0x0d0d0c0c,0x0c0c0c0b,0x0b0b0b0b,0x0b0b0b0b);
+    if ((r==9 && (i==59 || i==82))) return ivec4(0x0f0f0e0e,0x0e0e0d0d,0x0d0d0c0c,0x0c0c0c0b);
+    if ((r==9 && (i==60 || i==93))) return ivec4(0x0b0b0b0b,0x0b0b0b0b,0x0b0b0b0b,0x0b0b0b0b);
+    if ((r==9 && (i==61))) return ivec4(0x0b0b0b0b,0x0b0b0a0a,0x0a0a0a0a,0x0a0a0a09);
+    if ((r==9 && (i==62))) return ivec4(0x09090909,0x09090909,0x09090909,0x0f0e0d0c);
+    if ((r==9 && (i==63 || i==95))) return ivec4(0x00000000,0x00000000,0x0f0e0d0c,0x00000000);
+    if ((r==9 && (i==76))) return ivec4(0x09090808,0x08080807,0x0f0f0e0e,0x09090909);
+    if ((r==9 && (i==79))) return ivec4(0x0f0f0e0e,0x0a0a0909,0x0f0f0e0e,0x09090909);
+    if ((r==9 && (i==80))) return ivec4(0x0f0d0d0d,0x0d0d0d0d,0x09090909,0x09090908);
+    if ((r==9 && (i==83))) return ivec4(0x0f0f0e0e,0x0e0e0d0d,0x0f0f0e0e,0x0e0e0d0d);
+    if ((r==9 && (i==85))) return ivec4(0x0d0d0c0c,0x0c0c0c0b,0x0f0f0e0e,0x0e0e0d0d);
+    if ((r==9 && (i==87))) return ivec4(0x09090808,0x08080807,0x0f0d0d0d,0x0d0d0d0d);
+    if ((r==9 && (i==88))) return ivec4(0x09090909,0x09090908,0x08080808,0x08080808);
+    if ((r==9 && (i==89))) return ivec4(0x08080808,0x08080808,0x0f0f0e0e,0x0e0e0d0d);
+    if ((r==9 && (i==90))) return ivec4(0x0d0d0c0c,0x0c0c0c0b,0x0e0e0d0d,0x0d0d0c0c);
+    if ((r==9 && (i==91))) return ivec4(0x0c0c0b0b,0x0b0b0b0a,0x0e0e0d0d,0x0e0e0d0d);
+    if ((r==9 && (i==92))) return ivec4(0x0e0c0c0c,0x0c0c0c0c,0x0c0c0c0c,0x0c0c0c0b);
+    if ((r==9 && (i==94))) return ivec4(0x0b0b0b0b,0x0b0b0b0b,0x0b0b0b0b,0x0f0e0d0c);
+    if ((r==10 && ((i>=0 && i<=95)))) return ivec4(0x1f1e1e1e,0x1e1e1e1e,0x1f1e1e1e,0x1e1e1e1e);
+    if ((r==11 && ((i>=0 && i<=3) || (i>=16 && i<=19) || (i>=32 && i<=35) || (i>=48 && i<=51) || (i>=64 && i<=67) || (i>=80 && i<=83) || (i>=88 && i<=89)))) return ivec4(0x50505050,0x50505050,0x28282828,0x28282828);
+    if ((r==11 && ((i>=4 && i<=7) || (i>=20 && i<=23) || (i>=36 && i<=39) || (i>=52 && i<=55) || (i>=68 && i<=71) || (i>=84 && i<=87)))) return ivec4(0x47474747,0x47474747,0x23232323,0x23232323);
+    if ((r==11 && ((i>=8 && i<=11) || (i>=24 && i<=27) || (i>=40 && i<=43) || (i>=72 && i<=75) || i==90))) return ivec4(0x54545454,0x54545454,0x2a2a2a2a,0x2a2a2a2a);
+    if ((r==11 && ((i>=12 && i<=15) || (i>=28 && i<=31) || (i>=44 && i<=47) || (i>=76 && i<=79)))) return ivec4(0x7e7e7e7e,0x7e7e7e7e,0x3f3f3f3f,0x3f3f3f3f);
+    if ((r==11 && ((i>=56 && i<=63) || (i>=92 && i<=95)))) return ivec4(0x6a6a6a6a,0x6a6a6a6a,0x35353535,0x35353535);
+    if ((r==11 && (i==91))) return ivec4(0x5e5e5e5e,0x5e5e5e5e,0x2f2f2f2f,0x2f2f2f2f);
+    if ((r==13 && ((i>=0 && i<=95)))) return ivec4(0x0cffffff,0xffffffff,0x0cffffff,0xffffffff);
+    return ivec4(0);
+}
+
+
+int get_byte(int v, int x) {
+    return ( v >> ((3-((x) % 4))*8) ) & 0xff;
+}
+
+int frame_reg(int frame, int r) {
+    int i = frame / CHUNK_SIZE;
+    ivec4 v = get_reg(r, i);
+    int ofs = frame % CHUNK_SIZE;
+    int k = ofs / 4;
+    return get_byte(v[k], ofs);
+}
+
+
+struct ayemu_regdata_t {
+    int tone_a;     /**< R0, R1 */
+    int tone_b;     /**< R2, R3 */
+    int tone_c;     /**< R4, R5 */
+    int noise;      /**< R6 */
+    int R7_tone_a;  /**< R7 bit 0 */
+    int R7_tone_b;  /**< R7 bit 1 */
+    int R7_tone_c;  /**< R7 bit 2 */
+    int R7_noise_a; /**< R7 bit 3 */
+    int R7_noise_b; /**< R7 bit 4 */
+    int R7_noise_c; /**< R7 bit 5 */
+    int vol_a;      /**< R8 bits 3-0 */
+    int vol_b;      /**< R9 bits 3-0 */
+    int vol_c;      /**< R10 bits 3-0 */
+    int env_a;      /**< R8 bit 4 */
+    int env_b;      /**< R9 bit 4 */
+    int env_c;      /**< R10 bit 4 */
+    int env_freq;   /**< R11, R12 */
+    int env_style;  /**< R13 */
+};
+
+struct ayemu_sndfmt_t {
+    int freq;           /**< sound freq */
+    int channels;       /**< channels (1-mono, 2-stereo) */
+    int bpc;            /**< bits (8 or 16) */
+};
+
+struct ayemu_ay_t {
+    int ChipFreq;           /**< chip emulator frequency */
+    int bit_a;              /**< state of channel A generator */
+    int bit_b;              /**< state of channel B generator */
+    int bit_c;              /**< state of channel C generator */
+    int bit_n;              /**< current generator state */
+    int cnt_a;              /**< back counter of A */
+    int cnt_b;              /**< back counter of B */
+    int cnt_c;              /**< back counter of C */
+    int cnt_n;              /**< back counter of noise generator */
+    int cnt_e;              /**< back counter of envelop generator */
+    int EnvNum;             /**< number of current envilopment (0...15) */
+    int env_pos;            /**< current position in envelop (0...127) */
+    int Cur_Seed;           /**< random numbers counter */
+    ayemu_regdata_t regs;   /**< parsed registers data */
+    ayemu_sndfmt_t sndfmt;  /**< output sound format */
+    int ChipTacts_per_outcount;  /**< chip's counts per one sound signal count */
+    int Amp_Global;         /**< scale factor for amplitude */
+};
+
+ayemu_ay_t ay;
+
+void glsl_set_regs(int frame) {
+    ay.regs.tone_a = REGS(0) + ((REGS(1)&0x0f) << 8);
+    ay.regs.tone_b = REGS(2) + ((REGS(3)&0x0f) << 8);
+    ay.regs.tone_c = REGS(4) + ((REGS(5)&0x0f) << 8);
+    ay.regs.noise = REGS(6) & 0x1f;
+    ay.regs.R7_tone_a = NOT(REGS(7) & 0x01);
+    ay.regs.R7_tone_b = NOT(REGS(7) & 0x02);
+    ay.regs.R7_tone_c = NOT(REGS(7) & 0x04);
+    ay.regs.R7_noise_a = NOT(REGS(7) & 0x08);
+    ay.regs.R7_noise_b = NOT(REGS(7) & 0x10);
+    ay.regs.R7_noise_c = NOT(REGS(7) & 0x20);
+    ay.regs.vol_a = REGS(8) & 0x0f;
+    ay.regs.vol_b = REGS(9) & 0x0f;
+    ay.regs.vol_c = REGS(10) & 0x0f;
+    ay.regs.env_a = REGS(8) & 0x10;
+    ay.regs.env_b = REGS(9) & 0x10;
+    ay.regs.env_c = REGS(10) & 0x10;
+    ay.regs.env_freq = REGS(11) + (REGS(12) << 8);
+
+    if (REGS(13) != 0xff) {
+        ay.regs.env_style = REGS(13) & 0x0f;
+        ay.env_pos = ay.cnt_e = 0;
+    }
+}
+
+vec2 hash22(vec2 p)
+{
+    p  = fract(p * vec2(5.3983, 5.4427));
+    p += dot(vec2(p.y, p.x), p + vec2(21.5351, 14.3137));
+    return fract(vec2(p.x * p.y * 95.4337, p.x * p.y * 97.597));
+}
+
+vec2 noise(float t)
+{
+    return hash22(vec2(t, t * 1.423)) * 2.0 - 1.0;
+}
+
+vec2 lpnoise(float t, float fq)
+{
+    t *= fq;
+
+    float tt = fract(t);
+    float tn = t - tt;
+    tt = smoothstep(0.0, 1.0, tt);
+
+    vec2 n0 = noise(floor(tn + 0.0) / fq);
+    vec2 n1 = noise(floor(tn + 1.0) / fq);
+
+    return mix(n0, n1, tt);
+}
+
+int envelope(int e, int x) {
+    bool loop = e > 7 && (e % 2)==0;
+    int q = (x / 32) & (loop ? 1 : 3);
+    int ofs = (q==0 ? (e & 4)==0 : (e == 8 || e==11 || e==13 || e==14)) ? 31 : 0;
+    return (q==0 || loop) ? ( ofs + (ofs!=0 ? -1 : 1) * (x % 32) ) : ofs;
+}
+
+int ay_vols(int m, int n) {
+    float v_0_15 = float(n)*0.5;
+    float vol = exp2(-(31.0 - (v_0_15 * 31.0 / 15.0)) * 0.215) - 0.011;
+    float balance = (m==0 || m==5) ? 100.0 : (m==1 || m==4) ? 33.0 : 70.0;
+    return int ( clamp(vol, 0.0, 1.0) * 65535.0 * balance / 100.0 );
+}
+
+float square_wave(float t, float f) {
+    return mod( t * f, 1. ) >= .5 ? .0 : 1.;
+}
+
+vec2 mainSound(float t) {
+
+    ay.sndfmt.freq = int(iSampleRate);
+    ay.sndfmt.channels = 2;
+    ay.sndfmt.bpc = 16;
+
+    int max_l = ay_vols(0, 31) + ay_vols(2, 31) + ay_vols(3, 31);
+    int max_r = ay_vols(1, 31) + ay_vols(3, 31) + ay_vols(5, 31);
+
+    ay.ChipFreq = AYEMU_DEFAULT_CHIP_FREQ;
+    ay.cnt_a = ay.cnt_b = ay.cnt_c = ay.cnt_n = ay.cnt_e = 0;
+    ay.bit_a = ay.bit_b = ay.bit_c = ay.bit_n = 0;
+    ay.env_pos = ay.EnvNum = 0;
+    ay.Cur_Seed = 0xffff;
+    ay.ChipTacts_per_outcount = ay.ChipFreq / ay.sndfmt.freq / 8;
+    int maxvol = (max_l > max_r) ? max_l : max_r;
+    ay.Amp_Global = ay.ChipTacts_per_outcount * maxvol / AYEMU_MAX_AMP;
+
+    int frame = int( t * PLAYERFREQ );
+
+    if (frame >= FRAMES)
+        frame = LOOP_FRAME + ((frame-LOOP_FRAME) % (FRAMES-LOOP_FRAME));
+
+    glsl_set_regs(frame);
+
+    int mix_l = 0;
+    int mix_r = 0;
+
+    for (int i = 0; i < 3; i++) {
+
+        float tone = float(i==0 ? ay.regs.tone_a : i==1 ? ay.regs.tone_b : ay.regs.tone_c);
+        float chan_vol = float(i==0 ? ay.regs.vol_a : i==1 ? ay.regs.vol_b : ay.regs.vol_c ) / 16.0;
+
+        bool tone_gain  = (i==0 ? ay.regs.R7_tone_a : i==1 ? ay.regs.R7_tone_b : ay.regs.R7_tone_c)!=0;
+        bool env_gain   = (i==0 ? ay.regs.env_a : i==1 ? ay.regs.env_b : ay.regs.env_c)!=0;
+        bool noise_gain = (i==0 ? ay.regs.R7_noise_a : i==1 ? ay.regs.R7_noise_b : ay.regs.R7_noise_c)!=0;
+
+        float tone_freq = float(ay.ChipFreq) / 16.0 / tone;
+        float tone_amp = square_wave(t, tone_freq);
+
+        float env_freq = float(ay.ChipFreq) / 256.0 / float(ay.regs.env_freq);
+
+        ay.env_pos = int ( mod( t * env_freq, 1.0 ) * 128.0 );
+
+        float env_amp = float ( envelope( ay.regs.env_style, ay.env_pos ) ) / 32.0;
+
+        float noise_amp = lpnoise(t, 0.75 * 44100.0 * 44100.0 / iSampleRate).x;
+
+        noise_amp = noise_gain ? noise_amp : 0.0;
+        tone_amp = tone_gain ? tone_amp : 0.0;
+
+        float vol = (env_gain ? env_amp : ( tone_amp + noise_amp ) * chan_vol );
+
+        int tmpvol = int ( vol * 32.0 );
+
+        mix_l += ay_vols(i*2+0, tmpvol);
+        mix_r += ay_vols(i*2+1, tmpvol);
+    }
+
+    mix_l /= ay.Amp_Global;
+    mix_r /= ay.Amp_Global;
+
+    return vec2( float(mix_l) / 32767.0, float(mix_r) / 32767.0 );
+}
+
+
+out vec4 fragColor;
+void main() {
+   // compute time `t` based on the pixel we're about to write
+   // the 512.0 means the texture is 512 pixels across so it's
+   // using a 2 dimensional texture, 512 samples per row
+   float t = iBlockOffset + ((gl_FragCoord.x-0.5) + (gl_FragCoord.y-0.5)*512.0)/iSampleRate;
+
+   // Get the 2 values for left and right channels
+   vec2 y = mainSound( t );
+
+   // convert them from -1 to 1 to 0 to 65536
+   vec2 v  = floor((0.5+0.5*y)*65536.0);
+
+   // separate them into low and high bytes
+   vec2 vl = mod(v,256.0)/255.0;
+   vec2 vh = floor(v/256.0)/255.0;
+
+   // write them out where 
+   // RED   = channel 0 low byte
+   // GREEN = channel 0 high byte
+   // BLUE  = channel 1 low byte
+   // ALPHA = channel 2 high byte
+   fragColor = vec4(vl.x,vh.x,vl.y,vh.y);
+}
+
+</script>
+
+<script>
+var gl;
+var canvas;
+var buffer;
+var shaderScript;
+var shaderSource;
+var vertexShader;
+var fragmentShader;
+var program;
+
+function resize() {
+/*
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    gl.viewport( 0, 0, canvas.width, canvas.height );
+*/
+}
+
+window.onload = init;
+window.onresize = resize;
+
+function backToFloat(low, high) {
+  var value = low + high * 256;
+  return value / 32768 - 1;
+}
+
+function playTexture(gl, width, height, numSamples) {
+
+/*
+    var pixels = new Uint8Array(width * height * 4);
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+    //use audioCtx.sampleRate 
+
+    var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    var myArrayBuffer = audioCtx.createBuffer(2, numSamples, audioCtx.sampleRate);
+
+    var renderBuffer = myArrayBuffer.getChannelData(channel);
+
+    for (var channel = 0; channel < myArrayBuffer.numberOfChannels; channel++) {
+        var nowBuffering = myArrayBuffer.getChannelData(channel);
+          for (var i = 0; i < myArrayBuffer.length; i++) {
+            var offset = i * 4; 
+            nowBuffering[i] = channel==0
+                ? backToFloat(pixels[offset + 0], pixels[offset + 1])
+                : backToFloat(pixels[offset + 2], pixels[offset + 3]);
+        }
+    }
+*/
+    var source = audioCtx.createBufferSource();
+
+    // set the buffer in the AudioBufferSourceNode
+    source.buffer = myArrayBuffer;
+
+    // connect the AudioBufferSourceNode to the
+    // destination so we can hear the sound
+    source.connect(audioCtx.destination);
+
+    // start the source playing
+    source.start();
+}
+
+function pot(x){
+    return Math.pow(2, Math.ceil(Math.log(x)/Math.log(2)));
+}
+
+
+function init() {
+
+    canvas = document.getElementById('glscreen');
+    gl = canvas.getContext('webgl2');//, {alpha: false});
+
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+
+    buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData( gl.ARRAY_BUFFER, new Float32Array([-1.0, -1.0,    1.0, -1.0, -1.0,    1.0, -1.0,    1.0, 1.0, -1.0, 1.0,    1.0]), gl.STATIC_DRAW);
+
+    vertexShader = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vertexShader, document.getElementById("2d-vertex-shader").text);
+    gl.compileShader(vertexShader);
+
+    fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+    //gl.shaderSource(fragmentShader, document.getElementById("2d-fragment-shader").text);
+    gl.shaderSource(fragmentShader, document.getElementById("2d-sound-shader").text);
+    gl.compileShader(fragmentShader);
+
+    var error = gl.getShaderInfoLog(fragmentShader);
+    if (error.length > 0)
+        console.log(error);
+
+    program = gl.createProgram();
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    gl.useProgram(program);
+
+/*
+    resize();
+    render();
+*/
+
+    var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    numSeconds = 60.0;
+
+    w = 512;
+    h = Math.ceil( audioCtx.sampleRate * numSeconds / w );
+
+    console.log("w, h:", w, h);
+
+    canvas.width = w;
+    canvas.height = h;
+
+    gl.viewport( 0, 0, canvas.width, canvas.height );
+
+    positionLocation = gl.getAttribLocation(program, "a_position");
+    gl.enableVertexAttribArray(positionLocation);
+    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+    //--------------------------------
+
+    var mPlaySamples = w * h;
+
+    var numSamples = w * h;
+
+    var mBuffer = audioCtx.createBuffer(2, mPlaySamples, audioCtx.sampleRate);
+
+    gl.uniform1f(gl.getUniformLocation(program, "iSampleRate"), audioCtx.sampleRate);
+
+    var bufL = mBuffer.getChannelData(0);
+    var bufR = mBuffer.getChannelData(1);
+
+    var numBlocks = mPlaySamples / numSamples;
+
+    var mData = new Uint8Array(w * h * 4);
+
+    for( var j=0; j<numBlocks; j++ )
+    {
+        var off = j*numSamples;
+
+        gl.uniform1f(gl.getUniformLocation(program, "iBlockOffset"), off / audioCtx.sampleRate);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, mData);
+
+        for( var i=0; i<numSamples; i++ )
+        {
+            bufL[off+i] = -1.0 + 2.0*(mData[4*i+0]+256.0*mData[4*i+1])/65535.0;
+            bufR[off+i] = -1.0 + 2.0*(mData[4*i+2]+256.0*mData[4*i+3])/65535.0;
+        }
+    }
+
+    var source = audioCtx.createBufferSource();
+
+    // set the buffer in the AudioBufferSourceNode
+    source.buffer = mBuffer;
+
+    // connect the AudioBufferSourceNode to the
+    // destination so we can hear the sound
+    source.connect(audioCtx.destination);
+
+    // start the source playing
+    source.start();
+
+    console.log("play time %f seconds\n", mPlaySamples / audioCtx.sampleRate);
+
+}
+
+function render(time) {
+    window.requestAnimationFrame(render, canvas);
+
+    positionLocation = gl.getAttribLocation(program, "a_position");
+    gl.enableVertexAttribArray(positionLocation);
+    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+    timeLocation = gl.getUniformLocation(program, "iTime");
+    gl.uniform1f(timeLocation, time / 1000.0);
+
+    uniformLocation = gl.getUniformLocation( program, "iResolution" );
+    gl.uniform2f( uniformLocation, window.innerWidth, window.innerHeight );
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+
+</script>
+
+<style>
+/*
+body { margin: 0; padding: 0; overflow: hidden; background: #aaa; width: 100%; height: 100%; }
+canvas { width: 100%; height: 100%; }
+*/
+</style>
+
+</head>
+
+<body>
+
+<canvas id="glscreen"></canvas>
+
+</body>
+</html>
